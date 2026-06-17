@@ -1,5 +1,7 @@
-import { getCollection, setCollection } from "../lib/redis.js";
+import { createRequire } from "module";
+import { redis, getCollection, setCollection } from "../lib/redis.js";
 
+const require = createRequire(import.meta.url);
 const COLLECTIONS = ["products", "categories", "users", "orders", "messages"];
 
 function readBody(req) {
@@ -41,9 +43,21 @@ function filterAndSort(items, query) {
   return result;
 }
 
-function findById(items, id) {
-  const numId = parseInt(id);
-  return items.find((x) => x.id === numId || x.id === id);
+// Заповнення KV даними з db.json. ?force=1 — перезаписати все.
+async function handleSeed(req, res, force) {
+  const db = require("../db.json");
+  const result = {};
+  for (const name of COLLECTIONS) {
+    const existing = await getCollection(name);
+    if (!force && existing.length > 0) {
+      result[name] = `skipped (${existing.length} items)`;
+      continue;
+    }
+    const data = Array.isArray(db[name]) ? db[name] : [];
+    await redis.set(name, data);
+    result[name] = `seeded ${data.length} items`;
+  }
+  res.status(200).json({ ok: true, force, result });
 }
 
 export default async function handler(req, res) {
@@ -67,18 +81,24 @@ export default async function handler(req, res) {
   const collection = parts[0];
   const id = parts[1];
 
-  if (!collection || !COLLECTIONS.includes(collection)) {
-    res.status(404).json({ error: "Not found" });
-    return;
-  }
-
   try {
+    if (collection === "seed") {
+      await handleSeed(req, res, query["force"] === "1");
+      return;
+    }
+
+    if (!collection || !COLLECTIONS.includes(collection)) {
+      res.status(404).json({ error: "Not found" });
+      return;
+    }
+
     const items = await getCollection(collection);
 
     // GET
     if (req.method === "GET") {
       if (id !== undefined) {
-        const item = findById(items, id);
+        const numId = parseInt(id);
+        const item = items.find((x) => x.id === numId || x.id === id);
         if (!item) {
           res.status(404).json({ error: "Not found" });
           return;
